@@ -1,90 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { z } from 'zod'
-import { createAdminClient } from '@/lib/supabase/server'
-import { requireRole } from '@/lib/auth'
-import { rateLimit, clientIp } from '@/lib/rate-limit'
-import { promoValidateSchema, parseBody } from '@/lib/validation/schemas'
-
-export const dynamic = 'force-dynamic'
-
-const PromoSchema = z.object({
-  code: z.string().min(1).max(40),
-  subtotal: z.number().min(0).default(0),
-  deliveryFee: z.number().min(0).default(0),
-})
+import { createClient } from '@/lib/supabase/server'
 
 export async function POST(req: NextRequest) {
-  const auth = await requireRole('CUSTOMER')
-  if (auth.error) return auth.error
-
-  const ip = clientIp(req)
-  const rl = rateLimit(`promo:${auth.user.id}:${ip}`, 15, 60_000)
-  if (!rl.allowed) {
-    return NextResponse.json(
-      { valid: false, error: 'Too many promo checks. Try again later.' },
-      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
-    )
-  }
-
   try {
-    const body = await req.json()
-    const parsed = parseBody(promoValidateSchema, {
-      code: body.code,
-      subtotal: Number(body.subtotal) || 0,
-      deliveryFee: Number(body.deliveryFee) || 0,
-    })
-    if (!parsed.success) {
+    const { code, subtotal } = await req.json()
+
+    if (!code) {
       return NextResponse.json(
-        { valid: false, error: 'Invalid input', details: parsed.error },
+        { valid: false, error: 'Promo code is required' },
         { status: 400 }
       )
     }
 
-    const { code, subtotal, deliveryFee } = parsed.data
-    const admin = createAdminClient()
-    const { data: promo } = await admin
-      .from('promo_codes')
+    const currentSubtotal = Number(subtotal) || 0
+    const supabase = await createClient()
+
+    const { data: promo, error } = await supabase
+      .from('promos')
       .select('*')
       .eq('code', code.toUpperCase().trim())
-      .maybeSingle()
+      .single()
 
-    if (!promo || !promo.is_active) {
-      return NextResponse.json({
-        valid: false,
-        error: 'Invalid or inactive promo code',
-      })
+    if (error || !promo) {
+      return NextResponse.json(
+        { valid: false, error: 'Invalid promo code' },
+        { status: 404 }
+      )
     }
 
-    const now = new Date()
-    if (promo.starts_at && new Date(promo.starts_at) > now) {
-      return NextResponse.json({ valid: false, error: 'Promo not yet active' })
+    if (!promo.is_active) {
+      return NextResponse.json(
+        { valid: false, error: 'Promo code is inactive' },
+        { status: 400 }
+      )
     }
-    if (promo.expires_at && new Date(promo.expires_at) < now) {
-      return NextResponse.json({ valid: false, error: 'Promo has expired' })
-    }
-    if (promo.max_uses != null && promo.used_count >= promo.max_uses) {
-      return NextResponse.json({
-        valid: false,
-        error: 'Promo usage limit reached',
-      })
-    }
-   
-if (subtotal < (promo.min_order || 0)) {
 
-// With:
-const currentSubtotal = subtotal ?? 0;
-if (currentSubtotal < (promo.min_order || 0)) {
-  return NextResponse.json({
-    valid: false,
-    error: `Minimum order KES ${promo.min_order}`,
-  });
-}
+    if (promo.expires_at && new Date(promo.expires_at) < new Date()) {
+      return NextResponse.json(
+        { valid: false, error: 'Promo code has expired' },
+        { status: 400 }
+      )
+    }
+
+    if (promo.usage_limit && promo.used_count >= promo.usage_limit) {
+      return NextResponse.json(
+        { valid: false, error: 'Promo code usage limit reached' },
+        { status: 400 }
+      )
+    }
+
+    if (currentSubtotal < (promo.min_order || 0)) {
+      return NextResponse.json(
+        { valid: false, error: `Minimum order KES ${promo.min_order}` },
+        { status: 400 }
+      )
+    }
+
     let discount = 0
-    if (promo.discount_type === 'FIXED') discount = promo.discount_value
-    else if (promo.discount_type === 'PERCENTAGE') {
-      discount = Math.round((subtotal * promo.discount_value) / 100)
-    } else if (promo.discount_type === 'FREE_DELIVERY') {
-      discount = deliveryFee
+    if (promo.discount_type === 'percentage') {
+      discount = (currentSubtotal * promo.discount_value) / 100
+      if (promo.max_discount && discount > promo.max_discount) {
+        discount = promo.max_discount
+      }
+    } else if (promo.discount_type === 'fixed') {
+      discount = promo.discount_value
     }
 
     return NextResponse.json({
