@@ -68,7 +68,7 @@ export default function CustomerHome() {
         setLocation(locLabel)
 
         const res = await fetch(
-          `/api/vendors?lat=${lat}&lng=${lng}&radius=6&sort=nearest`
+         `/api/vendors?lat=${lat}&lng=${lng}&radius=50&sort=nearest`
         )
         const data = await res.json()
         if (res.ok) {
