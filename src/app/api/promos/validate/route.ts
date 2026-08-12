@@ -68,13 +68,17 @@ export async function POST(req: NextRequest) {
         error: 'Promo usage limit reached',
       })
     }
-    if (subtotal < (promo.min_order || 0)) {
-      return NextResponse.json({
-        valid: false,
-        error: `Minimum order KES ${promo.min_order}`,
-      })
-    }
+   
+if (subtotal < (promo.min_order || 0)) {
 
+// With:
+const currentSubtotal = subtotal ?? 0;
+if (currentSubtotal < (promo.min_order || 0)) {
+  return NextResponse.json({
+    valid: false,
+    error: `Minimum order KES ${promo.min_order}`,
+  });
+}
     let discount = 0
     if (promo.discount_type === 'FIXED') discount = promo.discount_value
     else if (promo.discount_type === 'PERCENTAGE') {
