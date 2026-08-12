@@ -55,9 +55,19 @@ export async function GET(req: NextRequest) {
       }
     })
 
-    result = result.filter((v) => v.distance <= radius)
-    if (sort === 'nearest') result.sort((a, b) => a.distance - b.distance)
-    else if (sort === 'rating') result.sort((a, b) => b.rating - a.rating)
+    // Keep vendors without coords; only distance-filter those that have lat/lng
+result = result.filter(
+  (v) => v.latitude == null || v.longitude == null || v.distance <= radius
+)
+if (sort === 'nearest') {
+  result.sort((a, b) => {
+    const da = a.latitude == null || a.longitude == null ? 9999 : a.distance
+    const db = b.latitude == null || b.longitude == null ? 9999 : b.distance
+    return da - db
+  })
+} else if (sort === 'rating') {
+  result.sort((a, b) => b.rating - a.rating)
+}
 
     return NextResponse.json({ vendors: result })
   } catch (err) {
