@@ -1,21 +1,12 @@
-import type {
-  Metadata,
-  Viewport,
-} from 'next'
+import type { Metadata, Viewport } from 'next'
 
 import './globals.css'
 
 import { ToastProvider } from '@/components/ui/Toast'
-
-import ServiceWorkerRegistration
-  from '@/components/pwa/ServiceWorkerRegistration'
-
-import NetworkStatus
-  from '@/components/pwa/NetworkStatus'
+import ServiceWorkerRegistration from '@/components/pwa/ServiceWorkerRegistration'
 
 export const metadata: Metadata = {
-  title:
-    'Mboga Market — Fresh from your neighbourhood',
+  title: 'Mboga Market — Fresh from your neighbourhood',
 
   description:
     'Order fresh produce from trusted mama mbogas and greengrocers near you in Kiambu and beyond. Pay with M-Pesa. Delivered by boda.',
@@ -23,36 +14,26 @@ export const metadata: Metadata = {
   keywords:
     'mboga, vegetables, Kenya, Kiambu, mama mboga, fresh produce, delivery',
 
-  manifest:
-    '/manifest.json',
+  manifest: '/manifest.json',
 
   appleWebApp: {
     capable: true,
-    statusBarStyle:
-      'default',
-    title:
-      'Mboga Market',
+    statusBarStyle: 'default',
+    title: 'Mboga Market',
   },
 }
 
-
 export const viewport: Viewport = {
-  themeColor:
-    '#16a34a',
+  themeColor: '#16a34a',
 
-  width:
-    'device-width',
+  width: 'device-width',
 
-  initialScale:
-    1,
+  initialScale: 1,
 
-  maximumScale:
-    1,
+  maximumScale: 1,
 
-  userScalable:
-    false,
+  userScalable: false,
 }
-
 
 export default function RootLayout({
   children,
@@ -62,13 +43,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen antialiased">
-
         <ServiceWorkerRegistration />
-         <NetworkStatus />
+
         <ToastProvider>
           {children}
         </ToastProvider>
-
       </body>
     </html>
   )
