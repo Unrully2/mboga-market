@@ -1,118 +1,188 @@
 import { NextRequest, NextResponse } from 'next/server'
-
 import { createAdminClient } from '@/lib/supabase/server'
-
 import { requireRole } from '@/lib/auth'
 import { deliveryAcceptSchema, parseBody } from '@/lib/validation/schemas'
 
 export const dynamic = 'force-dynamic'
 
-/**
- * Transform the database delivery structure into the structure
- * expected by the rider frontend.
+/*
+ * Shared delivery query.
  *
- * Database:
- * deliveries
- *   └── order
- *        ├── vendor
- *        ├── customer
- *        ├── address
- *        └── order_items
- *
- * Rider frontend expects:
- * {
- *   id,
- *   orderId,
- *   orderNumber,
- *   status,
- *   vendor,
- *   customer,
- *   itemCount,
- *   total,
- *   estimatedEarnings,
- *   deliveryNotes,
- *   earnings
- * }
+ * IMPORTANT:
+ * This must be outside GET() because POST() also uses it.
  */
-function formatDelivery(d: any) {
-  const order = d?.order || {}
+const DELIVERY_SELECT = `
+  *,
+  order:orders(
+    *,
+    vendor:vendors(
+      id,
+      business_name,
+      owner_name,
+      phone,
+      location,
+      estate,
+      market,
+      latitude,
+      longitude,
+      status,
+      is_verified,
+      rating,
+      total_reviews
+    ),
+    customer:customers(
+      id,
+      name,
+      phone,
+      email,
+      profile_image
+    ),
+    address:addresses(
+      id,
+      customer_id,
+      label,
+      estate,
+      street,
+      landmark,
+      latitude,
+      longitude,
+      is_default
+    ),
+    items:order_items(
+      id,
+      order_id,
+      vendor_product_id,
+      product_name,
+      unit,
+      price,
+      quantity,
+      instructions,
+      subtotal
+    )
+  )
+`
 
+/*
+ * Convert the database structure into the structure
+ * expected by the rider deliveries page.
+ */
+function formatDelivery(delivery: any) {
+  const order = delivery?.order || {}
   const vendor = order?.vendor || {}
-
   const customer = order?.customer || {}
+  const items = Array.isArray(order?.items)
+    ? order.items
+    : []
 
-  const items = Array.isArray(order?.items) ? order.items : []
-
-  // Count actual quantities rather than only counting item rows.
   const itemCount = items.reduce(
-    (sum: number, item: any) => {
+    (total: number, item: any) => {
       const quantity = Number(item?.quantity ?? 0)
 
-      return sum + (Number.isFinite(quantity) ? quantity : 0)
+      return total + (
+        Number.isFinite(quantity)
+          ? quantity
+          : 0
+      )
     },
     0
   )
 
-  // Delivery earnings.
-  // The database normally stores this on deliveries. If it is null,
-  // use the project's existing default rider earning of KES 80.
+  const orderTotal =
+    order?.total !== null &&
+    order?.total !== undefined
+      ? Number(order.total)
+      : 0
+
   const earnings =
-    d?.earnings !== null &&
-    d?.earnings !== undefined &&
-    Number.isFinite(Number(d.earnings))
-      ? Number(d.earnings)
-      : 80
+    delivery?.earnings !== null &&
+    delivery?.earnings !== undefined
+      ? Number(delivery.earnings)
+      : 0
 
   return {
-    // Delivery information
-    id: d?.id,
-    deliveryId: d?.id,
+    /*
+     * Delivery IDs
+     */
+    id: delivery?.id,
+    deliveryId: delivery?.id,
 
-    // IMPORTANT:
-    // This is what the rider page sends back when ACCEPT is clicked.
-    orderId: order?.id || d?.order_id,
+    /*
+     * THIS IS THE IMPORTANT FIELD.
+     *
+     * The rider page calls:
+     *
+     * accept(d.orderId)
+     *
+     * so orderId must be present at the top level.
+     */
+    orderId:
+      order?.id ||
+      delivery?.order_id,
 
-    orderNumber: order?.order_number || '',
+    /*
+     * Order
+     */
+    orderNumber:
+      order?.order_number || '',
 
-    status: d?.status || 'PENDING',
+    status:
+      delivery?.status || 'PENDING',
 
-    // Vendor information expected by the rider page
+    /*
+     * Vendor / pickup
+     */
     vendor: {
-      id: vendor?.id || order?.vendor_id || null,
-      businessName: vendor?.business_name || '',
-      location: vendor?.location || '',
-      phone: vendor?.phone || '',
+      id: vendor?.id || null,
+      businessName:
+        vendor?.business_name || '',
+      ownerName:
+        vendor?.owner_name || '',
+      phone:
+        vendor?.phone || '',
+      location:
+        vendor?.location || '',
+      estate:
+        vendor?.estate || '',
+      market:
+        vendor?.market || '',
       latitude:
-        vendor?.latitude !== null &&
-        vendor?.latitude !== undefined
-          ? Number(vendor.latitude)
-          : null,
+        vendor?.latitude ?? null,
       longitude:
-        vendor?.longitude !== null &&
-        vendor?.longitude !== undefined
-          ? Number(vendor.longitude)
-          : null,
+        vendor?.longitude ?? null,
+      rating:
+        vendor?.rating ?? 0,
     },
 
-    // Customer information expected by the rider page
+    /*
+     * Customer
+     */
     customer: {
-      id: customer?.id || order?.customer_id || null,
-      name: customer?.name || '',
-      phone: customer?.phone || '',
-      email: customer?.email || '',
+      id:
+        customer?.id ||
+        order?.customer_id ||
+        null,
+      name:
+        customer?.name || '',
+      phone:
+        customer?.phone || '',
+      email:
+        customer?.email || '',
+      profileImage:
+        customer?.profile_image || null,
     },
 
-    // Delivery address
-    address: order?.address || null,
+    /*
+     * Delivery address
+     */
+    address:
+      order?.address || null,
 
-    // Order information
+    /*
+     * Order items / totals
+     */
+    items,
+
     itemCount,
-
-    total:
-      order?.total !== null &&
-      order?.total !== undefined
-        ? Number(order.total)
-        : 0,
 
     subtotal:
       order?.subtotal !== null &&
@@ -138,40 +208,58 @@ function formatDelivery(d: any) {
         ? Number(order.discount)
         : 0,
 
-    // Delivery notes are stored on the order
-    deliveryNotes: order?.delivery_notes || null,
+    total: orderTotal,
 
-    preferredTime: order?.preferred_time || null,
+    /*
+     * Delivery information
+     */
+    deliveryNotes:
+      order?.delivery_notes || null,
 
-    paymentMethod: order?.payment_method || null,
+    preferredTime:
+      order?.preferred_time || null,
 
-    // Rider earnings
+    paymentMethod:
+      order?.payment_method || null,
+
+    /*
+     * Rider earnings
+     */
     earnings,
 
     estimatedEarnings: earnings,
 
-    // Timestamps
-    createdAt: d?.created_at || order?.created_at || null,
-    updatedAt: d?.updated_at || order?.updated_at || null,
+    /*
+     * Timestamps
+     */
+    createdAt:
+      delivery?.created_at ||
+      order?.created_at ||
+      null,
 
-    pickedUpAt: d?.picked_up_at || null,
-    deliveredAt: d?.delivered_at || null,
+    updatedAt:
+      delivery?.updated_at ||
+      order?.updated_at ||
+      null,
 
-    // Keep the original order and delivery available if another
-    // part of the application needs them.
-    order,
+    pickedUpAt:
+      delivery?.picked_up_at || null,
+
+    deliveredAt:
+      delivery?.delivered_at || null,
   }
 }
 
-/**
- * GET deliveries
+
+/*
+ * GET /api/deliveries
  *
  * Supported:
  *
- * /api/deliveries?type=available
- * /api/deliveries?type=active
- * /api/deliveries?type=history
- * /api/deliveries
+ * ?type=available
+ * ?type=active
+ * ?type=history
+ * no type = available + mine
  */
 export async function GET(req: NextRequest) {
   const result = await requireRole('RIDER')
@@ -183,77 +271,13 @@ export async function GET(req: NextRequest) {
   const { user } = result
 
   const type =
-    new URL(req.url).searchParams.get('type') || 'all'
+    new URL(req.url).searchParams.get('type') ||
+    'all'
 
   const admin = createAdminClient()
 
-  /**
-   * IMPORTANT:
-   *
-   * The old query only selected:
-   *
-   * order:orders(
-   *   *,
-   *   vendor:vendors(...),
-   *   address:addresses(...)
-   * )
-   *
-   * It did NOT select the customer or order_items.
-   *
-   * The rider UI needs both.
-   */
-  const select = `
-    *,
-    order:orders(
-      *,
-      vendor:vendors(
-        id,
-        business_name,
-        owner_name,
-        phone,
-        location,
-        estate,
-        market,
-        latitude,
-        longitude,
-        status,
-        is_verified,
-        rating,
-        total_reviews
-      ),
-      customer:customers(
-        id,
-        name,
-        phone,
-        email,
-        profile_image
-      ),
-      address:addresses(
-        id,
-        customer_id,
-        label,
-        estate,
-        street,
-        landmark,
-        latitude,
-        longitude,
-        is_default
-      ),
-      items:order_items(
-        id,
-        order_id,
-        vendor_product_id,
-        product_name,
-        unit,
-        price,
-        quantity,
-        instructions,
-        subtotal
-      )
-    )
-  `
 
-  /**
+  /*
    * AVAILABLE DELIVERIES
    */
   if (type === 'available') {
@@ -262,35 +286,40 @@ export async function GET(req: NextRequest) {
       error,
     } = await admin
       .from('deliveries')
-      .select(select)
+      .select(DELIVERY_SELECT)
       .eq('status', 'PENDING')
       .is('rider_id', null)
-      .order('created_at', { ascending: false })
+      .order('created_at', {
+        ascending: false,
+      })
       .limit(20)
 
     if (error) {
       console.error(
-        '[deliveries GET available]',
+        '[deliveries available]',
         error
       )
 
       return NextResponse.json(
         {
-          error: 'Failed to load available deliveries',
+          error:
+            'Failed to load available deliveries',
           details: error.message,
         },
-        { status: 500 }
+        {
+          status: 500,
+        }
       )
     }
 
-    const deliveries = (data || []).map(formatDelivery)
-
     return NextResponse.json({
-      deliveries,
+      deliveries:
+        (data || []).map(formatDelivery),
     })
   }
 
-  /**
+
+  /*
    * ACTIVE DELIVERIES
    */
   if (type === 'active') {
@@ -299,38 +328,46 @@ export async function GET(req: NextRequest) {
       error,
     } = await admin
       .from('deliveries')
-      .select(select)
-      .eq('rider_id', user.rider!.id)
+      .select(DELIVERY_SELECT)
+      .eq(
+        'rider_id',
+        user.rider!.id
+      )
       .in('status', [
         'ASSIGNED',
         'PICKED_UP',
         'IN_TRANSIT',
       ])
-      .order('created_at', { ascending: false })
+      .order('created_at', {
+        ascending: false,
+      })
 
     if (error) {
       console.error(
-        '[deliveries GET active]',
+        '[deliveries active]',
         error
       )
 
       return NextResponse.json(
         {
-          error: 'Failed to load active deliveries',
+          error:
+            'Failed to load active deliveries',
           details: error.message,
         },
-        { status: 500 }
+        {
+          status: 500,
+        }
       )
     }
 
-    const deliveries = (data || []).map(formatDelivery)
-
     return NextResponse.json({
-      deliveries,
+      deliveries:
+        (data || []).map(formatDelivery),
     })
   }
 
-  /**
+
+  /*
    * DELIVERY HISTORY
    */
   if (type === 'history') {
@@ -339,8 +376,11 @@ export async function GET(req: NextRequest) {
       error,
     } = await admin
       .from('deliveries')
-      .select(select)
-      .eq('rider_id', user.rider!.id)
+      .select(DELIVERY_SELECT)
+      .eq(
+        'rider_id',
+        user.rider!.id
+      )
       .eq('status', 'DELIVERED')
       .order('delivered_at', {
         ascending: false,
@@ -349,117 +389,133 @@ export async function GET(req: NextRequest) {
 
     if (error) {
       console.error(
-        '[deliveries GET history]',
+        '[deliveries history]',
         error
       )
 
       return NextResponse.json(
         {
-          error: 'Failed to load delivery history',
+          error:
+            'Failed to load delivery history',
           details: error.message,
         },
-        { status: 500 }
+        {
+          status: 500,
+        }
       )
     }
 
-    const deliveries = (data || []).map(
-      formatDelivery
-    )
-
     return NextResponse.json({
-      deliveries,
+      deliveries:
+        (data || []).map(formatDelivery),
     })
   }
 
-  /**
+
+  /*
    * DEFAULT
    *
-   * Returns:
-   * available = pending jobs
-   * mine = rider's active jobs
+   * Return both:
+   * - available deliveries
+   * - rider's active deliveries
    */
   const {
     data: available,
     error: availableError,
   } = await admin
     .from('deliveries')
-    .select(select)
+    .select(DELIVERY_SELECT)
     .eq('status', 'PENDING')
     .is('rider_id', null)
-    .order('created_at', { ascending: false })
+    .order('created_at', {
+      ascending: false,
+    })
     .limit(20)
 
   if (availableError) {
     console.error(
-      '[deliveries GET default available]',
+      '[deliveries default available]',
       availableError
     )
 
     return NextResponse.json(
       {
-        error: 'Failed to load available deliveries',
-        details: availableError.message,
+        error:
+          'Failed to load available deliveries',
+        details:
+          availableError.message,
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     )
   }
+
 
   const {
     data: mine,
     error: mineError,
   } = await admin
     .from('deliveries')
-    .select(select)
-    .eq('rider_id', user.rider!.id)
+    .select(DELIVERY_SELECT)
+    .eq(
+      'rider_id',
+      user.rider!.id
+    )
     .in('status', [
       'ASSIGNED',
       'PICKED_UP',
       'IN_TRANSIT',
     ])
-    .order('created_at', { ascending: false })
+    .order('created_at', {
+      ascending: false,
+    })
 
   if (mineError) {
     console.error(
-      '[deliveries GET default mine]',
+      '[deliveries default mine]',
       mineError
     )
 
     return NextResponse.json(
       {
-        error: 'Failed to load active deliveries',
-        details: mineError.message,
+        error:
+          'Failed to load active deliveries',
+        details:
+          mineError.message,
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     )
   }
 
   return NextResponse.json({
-    available: (available || []).map(
-      formatDelivery
-    ),
+    available:
+      (available || []).map(formatDelivery),
 
-    mine: (mine || []).map(
-      formatDelivery
-    ),
+    mine:
+      (mine || []).map(formatDelivery),
   })
 }
 
-/**
- * ACCEPT DELIVERY
+
+/*
+ * POST /api/deliveries
  *
- * A rider can accept using:
+ * Accept a delivery.
  *
- * {
- *   orderId: "uuid"
- * }
- *
- * OR:
+ * The rider page currently sends:
  *
  * {
- *   deliveryId: "uuid"
+ *   orderId: "..."
  * }
  *
- * The rider frontend currently sends orderId.
+ * The API also accepts:
+ *
+ * {
+ *   deliveryId: "..."
+ * }
  */
 export async function POST(req: NextRequest) {
   const result = await requireRole('RIDER')
@@ -470,8 +526,9 @@ export async function POST(req: NextRequest) {
 
   const { user } = result
 
-  /**
-   * Safely parse JSON.
+
+  /*
+   * Read JSON safely.
    */
   let raw: any
 
@@ -482,33 +539,43 @@ export async function POST(req: NextRequest) {
       {
         error: 'Invalid JSON body',
       },
-      { status: 400 }
+      {
+        status: 400,
+      }
     )
   }
 
-  /**
-   * Validate either deliveryId or orderId.
-   *
-   * The validation schema requires a valid UUID.
+
+  /*
+   * Validate request.
    */
   const parsed = parseBody(
     deliveryAcceptSchema,
     {
       deliveryId:
-        raw?.deliveryId || undefined,
+        raw?.deliveryId ||
+        undefined,
 
       orderId:
-        raw?.orderId || undefined,
+        raw?.orderId ||
+        undefined,
     }
   )
 
   if (!parsed.success) {
+    console.error(
+      '[delivery accept validation]',
+      parsed.error
+    )
+
     return NextResponse.json(
       {
         error: 'Invalid input',
         details: parsed.error,
       },
-      { status: 400 }
+      {
+        status: 400,
+      }
     )
   }
 
@@ -519,11 +586,9 @@ export async function POST(req: NextRequest) {
 
   const admin = createAdminClient()
 
-  /**
-   * Find a still-available delivery.
-   *
-   * This protects against two riders trying to
-   * accept the same delivery.
+
+  /*
+   * Find a currently available delivery.
    */
   let query = admin
     .from('deliveries')
@@ -532,7 +597,10 @@ export async function POST(req: NextRequest) {
     .is('rider_id', null)
 
   if (deliveryId) {
-    query = query.eq('id', deliveryId)
+    query = query.eq(
+      'id',
+      deliveryId
+    )
   } else {
     query = query.eq(
       'order_id',
@@ -553,34 +621,40 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       {
-        error: 'Failed to find delivery',
-        details: findError.message,
+        error:
+          'Failed to find delivery',
+        details:
+          findError.message,
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     )
   }
 
   if (!delivery) {
     return NextResponse.json(
       {
-        error: 'Delivery not available',
+        error:
+          'Delivery is no longer available',
       },
-      { status: 404 }
+      {
+        status: 404,
+      }
     )
   }
 
-  /**
+
+  /*
    * ATOMIC CLAIM
    *
-   * The important conditions are:
+   * This is deliberately:
    *
-   * id = delivery.id
    * status = PENDING
    * rider_id IS NULL
    *
-   * Therefore another rider cannot successfully
-   * claim the same delivery after it has already
-   * been assigned.
+   * so two riders cannot successfully
+   * claim the same delivery.
    */
   const {
     data: claimed,
@@ -588,12 +662,24 @@ export async function POST(req: NextRequest) {
   } = await admin
     .from('deliveries')
     .update({
-      rider_id: user.rider!.id,
-      status: 'ASSIGNED',
+      rider_id:
+        user.rider!.id,
+
+      status:
+        'ASSIGNED',
     })
-    .eq('id', delivery.id)
-    .eq('status', 'PENDING')
-    .is('rider_id', null)
+    .eq(
+      'id',
+      delivery.id
+    )
+    .eq(
+      'status',
+      'PENDING'
+    )
+    .is(
+      'rider_id',
+      null
+    )
     .select()
     .maybeSingle()
 
@@ -605,35 +691,40 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       {
-        error: 'Failed to accept delivery',
-        details: claimError.message,
+        error:
+          'Failed to accept delivery',
+        details:
+          claimError.message,
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     )
   }
 
-  /**
-   * If no row was returned, another rider
-   * probably claimed it first.
-   */
   if (!claimed) {
     return NextResponse.json(
       {
-        error: 'Delivery already assigned',
+        error:
+          'Delivery already assigned',
       },
-      { status: 409 }
+      {
+        status: 409,
+      }
     )
   }
 
-  /**
-   * Update the central order state.
+
+  /*
+   * Update central order status.
    */
   const {
     error: rpcError,
   } = await admin.rpc(
     'transition_order_status',
     {
-      p_order_id: delivery.order_id,
+      p_order_id:
+        delivery.order_id,
 
       p_new_status:
         'RIDER_ASSIGNED',
@@ -649,12 +740,9 @@ export async function POST(req: NextRequest) {
     }
   )
 
-  /**
-   * Do not undo the delivery assignment if
-   * the order status transition fails.
-   *
-   * The original project intentionally treats
-   * this as best-effort.
+  /*
+   * Keep the delivery assigned even if
+   * the order-status RPC fails.
    */
   if (rpcError) {
     console.error(
@@ -663,11 +751,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  /**
-   * Rider is now busy.
+
+  /*
+   * Mark rider unavailable.
    */
   const {
-    error: riderUpdateError,
+    error: riderError,
   } = await admin
     .from('riders')
     .update({
@@ -678,33 +767,48 @@ export async function POST(req: NextRequest) {
       user.rider!.id
     )
 
-  if (riderUpdateError) {
+  if (riderError) {
     console.error(
-      '[delivery accept] rider availability update failed',
-      riderUpdateError
+      '[delivery accept] rider update failed',
+      riderError
     )
   }
 
-  /**
-   * Return the accepted delivery in the SAME
-   * frontend-friendly format used by GET.
-   *
-   * Fetch it again with all relationships so
-   * the response is immediately useful.
+
+  /*
+   * Fetch the accepted delivery again
+   * with all relationships.
    */
   const {
     data: acceptedDelivery,
+    error: acceptedError,
   } = await admin
     .from('deliveries')
-    .select(select)
-    .eq('id', claimed.id)
+    .select(DELIVERY_SELECT)
+    .eq(
+      'id',
+      claimed.id
+    )
     .maybeSingle()
+
+  if (acceptedError) {
+    console.error(
+      '[delivery accept] reload failed',
+      acceptedError
+    )
+  }
+
 
   return NextResponse.json({
     message: 'Accepted',
 
-    delivery: acceptedDelivery
-      ? formatDelivery(acceptedDelivery)
-      : formatDelivery(claimed),
+    delivery:
+      acceptedDelivery
+        ? formatDelivery(
+            acceptedDelivery
+          )
+        : formatDelivery(
+            claimed
+          ),
   })
 }
