@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <meta
+    name="theme-color"
+    content="#16a34a"
+  >
+
+  <title>Mboga Market — Offline</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #f8fafc;
+      font-family:
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+      color: #0f172a;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: white;
+      border-radius: 24px;
+      padding: 32px 24px;
+      text-align: center;
+      box-shadow:
+        0 10px 30px
+        rgba(15, 23, 42, 0.08);
+    }
+
+    .icon {
+      width: 76px;
+      height: 76px;
+      margin: 0 auto 20px;
+      border-radius: 22px;
+      background: #dcfce7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 38px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 26px;
+    }
+
+    p {
+      margin: 0;
+      color: #64748b;
+      line-height: 1.6;
+    }
+
+    button {
+      width: 100%;
+      margin-top: 24px;
+      border: 0;
+      border-radius: 14px;
+      padding: 14px;
+      background: #16a34a;
+      color: white;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="card">
+    <div class="icon">
+      🥬
+    </div>
+
+    <h1>
+      You're offline
+    </h1>
+
+    <p>
+      Mboga Market is still installed,
+      but your internet connection is
+      currently unavailable.
+    </p>
+
+    <button
+      onclick="location.reload()"
+    >
+      TRY AGAIN
+    </button>
+  </main>
+</body>
+</html>
