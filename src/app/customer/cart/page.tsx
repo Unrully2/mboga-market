@@ -7,9 +7,7 @@ import {
 } from 'react'
 
 import Link from 'next/link'
-
 import { BottomNav } from '@/components/layout/BottomNav'
-
 import { useRouter } from 'next/navigation'
 
 import {
@@ -17,15 +15,6 @@ import {
   put,
   STORES,
 } from '@/lib/offline/db'
-
-import {
-  queueCartQuantityUpdate,
-  queueCartRemoval,
-  syncPendingMutations,
-  unblockUserMutations,
-} from '@/lib/offline/mutations'
-
-import { createClient } from '@/lib/supabase/client'
 
 
 interface CartItem {
@@ -37,8 +26,6 @@ interface CartItem {
   quantity: number
   instructions?: string
   lineTotal: number
-  image?: string
-  stockStatus?: string
 }
 
 
@@ -58,12 +45,6 @@ interface CartGroup {
 }
 
 
-interface CartResponse {
-  groups: CartGroup[]
-  subtotal?: number
-}
-
-
 interface CachedCart {
   id: string
   groups: CartGroup[]
@@ -72,124 +53,43 @@ interface CachedCart {
 }
 
 
-/*
- * Get the currently authenticated
- * Supabase user.
- */
-async function getCurrentUserId(): Promise<
-  string | null
-> {
-  try {
-    const supabase =
-      createClient()
-
-    const {
-      data,
-      error,
-    } =
-      await supabase.auth.getUser()
-
-    if (error) {
-      return null
-    }
-
-    return (
-      data.user?.id ||
-      null
-    )
-  } catch {
-    return null
-  }
-}
+const CART_CACHE_KEY =
+  'customer:cart'
 
 
-/*
- * Every user's offline cart gets
- * its own IndexedDB record.
- */
-async function getCartCacheKey(): Promise<
-  string | null
-> {
-  const userId =
-    await getCurrentUserId()
-
-  if (!userId) {
-    return null
-  }
-
-  return `cart:${userId}`
-}
-
-
-/*
- * Save a complete cart locally.
- */
-async function saveCachedCart(
+async function saveCartOffline(
   groups: CartGroup[],
   subtotal: number
-): Promise<void> {
-  try {
-    const key =
-      await getCartCacheKey()
-
-    if (!key) {
-      return
-    }
-
-    const record: CachedCart = {
-      id: key,
-
-      groups,
-
-      subtotal,
-
-      cachedAt:
-        new Date().toISOString(),
-    }
-
-    await put(
-      STORES.cart,
-      record
-    )
-
-    console.info(
-      '[Mboga Offline] Cart cached successfully.'
-    )
-  } catch (error) {
-    console.warn(
-      '[Mboga Offline] Could not cache cart:',
-      error
-    )
+) {
+  const cached: CachedCart = {
+    id: CART_CACHE_KEY,
+    groups,
+    subtotal,
+    cachedAt:
+      new Date().toISOString(),
   }
+
+  await put(
+    STORES.cart,
+    cached
+  )
 }
 
 
-/*
- * Read the last saved cart.
- */
 async function getCachedCart(): Promise<
   CachedCart | null
 > {
   try {
-    const key =
-      await getCartCacheKey()
-
-    if (!key) {
-      return null
-    }
-
     const cached =
       await get<CachedCart>(
         STORES.cart,
-        key
+        CART_CACHE_KEY
       )
 
-    return (
-      cached || null
-    )
+    return cached || null
   } catch (error) {
-    console.warn(
-      '[Mboga Offline] Could not read cached cart:',
+    console.error(
+      '[Mboga Offline] Failed to read cached cart:',
       error
     )
 
@@ -199,8 +99,7 @@ async function getCachedCart(): Promise<
 
 
 export default function CartPage() {
-  const router =
-    useRouter()
+  const router = useRouter()
 
 
   const [
@@ -234,164 +133,103 @@ export default function CartPage() {
 
 
   const [
-    syncing,
-    setSyncing,
-  ] = useState(false)
-
-
-  const [
     cachedAt,
     setCachedAt,
-  ] = useState<string | null>(
-    null
-  )
+  ] = useState<
+    string | null
+  >(null)
 
 
   /*
-   * Apply cart to React state.
-   */
-  const applyCart =
-    useCallback(
-      (
-        nextGroups: CartGroup[],
-        nextSubtotal?: number
-      ) => {
-        setGroups(
-          nextGroups
-        )
-
-        const calculated =
-          typeof nextSubtotal ===
-          'number'
-            ? nextSubtotal
-            : nextGroups.reduce(
-                (
-                  total,
-                  group
-                ) =>
-                  total +
-                  Number(
-                    group.subtotal ||
-                      0
-                  ),
-                0
-              )
-
-        setSubtotal(
-          calculated
-        )
-      },
-      []
-    )
-
-
-  /*
-   * Load the authoritative server
-   * cart when online.
+   * Load the cart.
    *
-   * Falls back to IndexedDB when
-   * the network is unavailable.
+   * ONLINE:
+   *
+   * API
+   * ↓
+   * React
+   * ↓
+   * IndexedDB
+   *
+   *
+   * OFFLINE:
+   *
+   * IndexedDB
+   * ↓
+   * React
    */
   const loadCart =
     useCallback(
-      async (
-        showLoading = true
-      ) => {
-        try {
-          if (showLoading) {
-            setLoading(true)
-          }
+      async () => {
+        setLoading(true)
 
-          setError('')
+        setError('')
 
 
-          const isOnline =
-            typeof navigator ===
-              'undefined'
-              ? true
-              : navigator.onLine
+        const browserOffline =
+          typeof navigator !==
+            'undefined'
+            ? !navigator.onLine
+            : false
 
 
-          /*
-           * OFFLINE
-           */
-          if (!isOnline) {
+        /*
+         * If the browser is already
+         * offline, do not waste time
+         * attempting the API.
+         */
+        if (browserOffline) {
+          const cached =
+            await getCachedCart()
+
+
+          if (cached) {
+            setGroups(
+              cached.groups
+            )
+
+
+            setSubtotal(
+              cached.subtotal
+            )
+
+
+            setCachedAt(
+              cached.cachedAt
+            )
+
+
             setOffline(true)
 
-            const cached =
-              await getCachedCart()
-
-            if (cached) {
-              applyCart(
-                cached.groups,
-                cached.subtotal
-              )
-
-              setCachedAt(
-                cached.cachedAt
-              )
-
-              return
-            }
-
-            setGroups([])
-
-            setSubtotal(0)
-
-            setError(
-              'You are offline and no saved cart is available.'
-            )
+            setLoading(false)
 
             return
           }
 
 
-          /*
-           * ONLINE
-           */
-          setOffline(false)
+          setGroups([])
+
+          setSubtotal(0)
+
+          setOffline(true)
 
 
-          /*
-           * First synchronize anything
-           * that was queued while offline.
-           */
-          const userId =
-            await getCurrentUserId()
+          setError(
+            'Your cart has not been saved on this device yet.'
+          )
 
 
-          if (userId) {
-            try {
-              await unblockUserMutations(
-                userId
-              )
+          setLoading(false)
 
-              setSyncing(true)
-
-              await syncPendingMutations(
-                userId
-              )
-            } catch (syncError) {
-              console.warn(
-                '[Mboga Offline] Cart synchronization failed:',
-                syncError
-              )
-            } finally {
-              setSyncing(false)
-            }
-          }
+          return
+        }
 
 
-          /*
-           * Now fetch the authoritative
-           * server cart.
-           */
-          const response =
+        try {
+          const res =
             await fetch(
               '/api/cart',
               {
-                method: 'GET',
-
                 credentials:
                   'include',
 
@@ -401,8 +239,13 @@ export default function CartPage() {
             )
 
 
+          /*
+           * Authentication is still
+           * required for the real
+           * server cart.
+           */
           if (
-            response.status ===
+            res.status ===
             401
           ) {
             router.push(
@@ -413,46 +256,30 @@ export default function CartPage() {
           }
 
 
-          let data:
-            CartResponse & {
-              error?: string
-            }
+          const data =
+            await res.json()
 
 
-          try {
-            data =
-              await response.json()
-          } catch {
+          if (!res.ok) {
             throw new Error(
-              'Invalid cart response from server.'
-            )
-          }
-
-
-          if (!response.ok) {
-            throw new Error(
-              data.error ||
-                'Failed to load cart.'
+              data?.error ||
+                'Failed to load cart'
             )
           }
 
 
           const nextGroups =
-            Array.isArray(
-              data.groups
-            )
-              ? data.groups
-              : []
+            data.groups ||
+            []
 
 
           const nextSubtotal =
-            typeof data.subtotal ===
-            'number'
-              ? data.subtotal
-              : nextGroups.reduce(
+            Number(
+              data.subtotal ||
+                nextGroups.reduce(
                   (
-                    total,
-                    group
+                    total: number,
+                    group: CartGroup
                   ) =>
                     total +
                     Number(
@@ -461,77 +288,102 @@ export default function CartPage() {
                     ),
                   0
                 )
+            )
 
 
-          /*
-           * Server is authoritative.
-           */
-          applyCart(
-            nextGroups,
+          setGroups(
+            nextGroups
+          )
+
+
+          setSubtotal(
             nextSubtotal
           )
 
 
           /*
-           * Save the latest server
-           * version locally.
+           * Save the successful
+           * server response locally.
            */
-          await saveCachedCart(
-            nextGroups,
-            nextSubtotal
-          )
+          try {
+            await saveCartOffline(
+              nextGroups,
+              nextSubtotal
+            )
 
 
-          setCachedAt(
-            new Date().toISOString()
-          )
-        } catch (e: unknown) {
+            setCachedAt(
+              new Date().toISOString()
+            )
+          } catch (cacheError) {
+            /*
+             * A cache failure must
+             * never break the cart.
+             */
+            console.error(
+              '[Mboga Offline] Cart cache failed:',
+              cacheError
+            )
+          }
+
+
+          setOffline(false)
+
+          setError('')
+        } catch (e: any) {
           /*
            * Network failure:
-           * use the last good cart.
+           * fall back to IndexedDB.
            */
           const cached =
             await getCachedCart()
 
 
           if (cached) {
-            setOffline(true)
+            setGroups(
+              cached.groups
+            )
 
-            applyCart(
-              cached.groups,
+
+            setSubtotal(
               cached.subtotal
             )
+
 
             setCachedAt(
               cached.cachedAt
             )
 
+
+            setOffline(true)
+
+
             setError(
-              'Connection lost. Showing your last saved cart.'
+              'You are offline. Showing your last saved cart.'
             )
+          } else {
+            setGroups([])
 
-            return
+            setSubtotal(0)
+
+            setOffline(true)
+
+
+            setError(
+              e?.message ||
+                'Failed to load cart.'
+            )
           }
-
-
-          setError(
-            e instanceof Error
-              ? e.message
-              : 'Failed to load cart.'
-          )
         } finally {
           setLoading(false)
         }
       },
-      [
-        applyCart,
-        router,
-      ]
+      [router]
     )
 
 
   /*
-   * Initial load.
+   * Initial cart load.
    */
   useEffect(() => {
     void loadCart()
@@ -539,14 +391,14 @@ export default function CartPage() {
 
 
   /*
-   * Detect connection changes.
+   * React to connection changes.
    */
   useEffect(() => {
     function handleOffline() {
       setOffline(true)
 
       setError(
-        'You are offline. Cart changes will be saved locally.'
+        'You are offline. Showing your saved cart.'
       )
     }
 
@@ -557,12 +409,11 @@ export default function CartPage() {
       setError('')
 
       /*
-       * Internet is back.
-       *
-       * Synchronize queued mutations
-       * then reload authoritative cart.
+       * When connection returns,
+       * the server becomes the
+       * source of truth again.
        */
-      void loadCart(false)
+      void loadCart()
     }
 
 
@@ -570,6 +421,7 @@ export default function CartPage() {
       'offline',
       handleOffline
     )
+
 
     window.addEventListener(
       'online',
@@ -583,6 +435,7 @@ export default function CartPage() {
         handleOffline
       )
 
+
       window.removeEventListener(
         'online',
         handleOnline
@@ -592,284 +445,36 @@ export default function CartPage() {
 
 
   /*
-   * Update the local cart immediately.
+   * Change quantity.
    *
-   * This is used for offline operation.
-   */
-  const updateLocalQuantity =
-    useCallback(
-      (
-        cartItemId: string,
-        quantity: number
-      ) => {
-        setGroups(
-          currentGroups => {
-            const nextGroups =
-              currentGroups.map(
-                group => {
-                  const items =
-                    group.items.map(
-                      item => {
-                        if (
-                          item.id !==
-                          cartItemId
-                        ) {
-                          return item
-                        }
-
-                        const lineTotal =
-                          Number(
-                            item.price
-                          ) *
-                          quantity
-
-                        return {
-                          ...item,
-
-                          quantity,
-
-                          lineTotal,
-                        }
-                      }
-                    )
-
-
-                  const groupSubtotal =
-                    items.reduce(
-                      (
-                        total,
-                        item
-                      ) =>
-                        total +
-                        Number(
-                          item.lineTotal ||
-                            0
-                        ),
-                      0
-                    )
-
-
-                  return {
-                    ...group,
-
-                    items,
-
-                    subtotal:
-                      groupSubtotal,
-                  }
-                }
-              )
-
-
-            const newSubtotal =
-              nextGroups.reduce(
-                (
-                  total,
-                  group
-                ) =>
-                  total +
-                  Number(
-                    group.subtotal ||
-                      0
-                  ),
-                0
-              )
-
-
-            setSubtotal(
-              newSubtotal
-            )
-
-
-            void saveCachedCart(
-              nextGroups,
-              newSubtotal
-            )
-
-
-            return nextGroups
-          }
-        )
-      },
-      []
-    )
-
-
-  /*
-   * Remove an item immediately
-   * from the local cart.
-   */
-  const removeLocalItem =
-    useCallback(
-      (
-        cartItemId: string
-      ) => {
-        setGroups(
-          currentGroups => {
-            const nextGroups =
-              currentGroups
-                .map(
-                  group => {
-                    const items =
-                      group.items.filter(
-                        item =>
-                          item.id !==
-                          cartItemId
-                      )
-
-
-                    const groupSubtotal =
-                      items.reduce(
-                        (
-                          total,
-                          item
-                        ) =>
-                          total +
-                          Number(
-                            item.lineTotal ||
-                              0
-                          ),
-                        0
-                      )
-
-
-                    return {
-                      ...group,
-
-                      items,
-
-                      subtotal:
-                        groupSubtotal,
-                    }
-                  }
-                )
-                .filter(
-                  group =>
-                    group.items
-                      .length >
-                    0
-                )
-
-
-            const newSubtotal =
-              nextGroups.reduce(
-                (
-                  total,
-                  group
-                ) =>
-                  total +
-                  Number(
-                    group.subtotal ||
-                      0
-                  ),
-                0
-              )
-
-
-            setSubtotal(
-              newSubtotal
-            )
-
-
-            void saveCachedCart(
-              nextGroups,
-              newSubtotal
-            )
-
-
-            return nextGroups
-          }
-        )
-      },
-      []
-    )
-
-
-  /*
-   * Update quantity.
+   * IMPORTANT:
    *
-   * ONLINE:
-   *   API → refresh server cart
+   * Offline PATCH mutations are
+   * deliberately NOT sent yet.
    *
-   * OFFLINE:
-   *   local cart → queue
+   * The synchronization queue is
+   * the next layer.
    */
   async function updateQty(
     cartItemId: string,
     quantity: number
   ) {
-    if (
-      quantity <
-      1
-    ) {
-      return
-    }
-
-
-    setError('')
-
-
-    const userId =
-      await getCurrentUserId()
-
-
-    if (!userId) {
-      router.push(
-        '/login'
+    if (offline) {
+      setError(
+        'Reconnect before changing cart quantities.'
       )
 
       return
     }
 
 
-    const isOnline =
-      navigator.onLine
-
-
-    /*
-     * OFFLINE
-     */
-    if (!isOnline) {
-      try {
-        await queueCartQuantityUpdate(
-          userId,
-          cartItemId,
-          quantity
-        )
-
-
-        updateLocalQuantity(
-          cartItemId,
-          quantity
-        )
-
-
-        setOffline(true)
-
-        setError(
-          'Saved offline. This change will synchronize when you reconnect.'
-        )
-      } catch (e: unknown) {
-        setError(
-          e instanceof Error
-            ? e.message
-            : 'Could not save cart change offline.'
-        )
-      }
-
-      return
-    }
-
-
-    /*
-     * ONLINE
-     */
     try {
-      const response =
+      const res =
         await fetch(
           '/api/cart',
           {
-            method: 'PATCH',
+            method:
+              'PATCH',
 
             headers: {
               'Content-Type':
@@ -881,21 +486,20 @@ export default function CartPage() {
 
             body:
               JSON.stringify({
-                /*
-                 * IMPORTANT:
-                 *
-                 * API expects "id".
-                 */
-                id: cartItemId,
+                id:
+                  cartItemId,
 
-                quantity,
+                quantity:
+                  Number(
+                    quantity
+                  ),
               }),
           }
         )
 
 
       if (
-        response.status ===
+        res.status ===
         401
       ) {
         router.push(
@@ -906,81 +510,25 @@ export default function CartPage() {
       }
 
 
-      if (!response.ok) {
-        let message =
-          'Failed to update cart.'
-
-
-        try {
-          const data =
-            await response.json()
-
-          message =
-            data.error ||
-            message
-        } catch {
-          /*
-           * Keep default.
-           */
-        }
+      if (!res.ok) {
+        const data =
+          await res.json().catch(
+            () => ({})
+          )
 
 
         throw new Error(
-          message
+          data?.error ||
+            'Failed to update cart'
         )
       }
 
 
-      /*
-       * Server accepted the change.
-       */
-      await loadCart(false)
-    } catch (e: unknown) {
-      /*
-       * The request may have failed
-       * because the connection disappeared
-       * during the request.
-       *
-       * A quantity PATCH is an absolute
-       * desired quantity, so retrying the
-       * same PATCH is safe.
-       */
-      if (
-        !navigator.onLine
-      ) {
-        try {
-          await queueCartQuantityUpdate(
-            userId,
-            cartItemId,
-            quantity
-          )
-
-
-          updateLocalQuantity(
-            cartItemId,
-            quantity
-          )
-
-
-          setOffline(true)
-
-          setError(
-            'Connection lost. Your cart change was saved and will synchronize later.'
-          )
-
-          return
-        } catch {
-          /*
-           * Fall through to normal error.
-           */
-        }
-      }
-
-
+      await loadCart()
+    } catch (e: any) {
       setError(
-        e instanceof Error
-          ? e.message
-          : 'Failed to update cart.'
+        e?.message ||
+          'Failed to update cart'
       )
     }
   }
@@ -988,78 +536,28 @@ export default function CartPage() {
 
   /*
    * Remove cart item.
-   *
-   * DELETE is safe to retry because
-   * the desired final state is:
-   * "item does not exist".
    */
   async function removeItem(
     cartItemId: string
   ) {
-    setError('')
-
-
-    const userId =
-      await getCurrentUserId()
-
-
-    if (!userId) {
-      router.push(
-        '/login'
+    if (offline) {
+      setError(
+        'Reconnect before removing items from the cart.'
       )
 
       return
     }
 
 
-    const isOnline =
-      navigator.onLine
-
-
-    /*
-     * OFFLINE
-     */
-    if (!isOnline) {
-      try {
-        await queueCartRemoval(
-          userId,
-          cartItemId
-        )
-
-
-        removeLocalItem(
-          cartItemId
-        )
-
-
-        setOffline(true)
-
-        setError(
-          'Removal saved offline. It will synchronize when you reconnect.'
-        )
-      } catch (e: unknown) {
-        setError(
-          e instanceof Error
-            ? e.message
-            : 'Could not save removal offline.'
-        )
-      }
-
-      return
-    }
-
-
-    /*
-     * ONLINE
-     */
     try {
-      const response =
+      const res =
         await fetch(
           `/api/cart?id=${encodeURIComponent(
             cartItemId
           )}`,
           {
-            method: 'DELETE',
+            method:
+              'DELETE',
 
             credentials:
               'include',
@@ -1068,7 +566,7 @@ export default function CartPage() {
 
 
       if (
-        response.status ===
+        res.status ===
         401
       ) {
         router.push(
@@ -1079,76 +577,61 @@ export default function CartPage() {
       }
 
 
-      if (!response.ok) {
-        let message =
-          'Failed to remove item.'
-
-
-        try {
-          const data =
-            await response.json()
-
-          message =
-            data.error ||
-            message
-        } catch {
-          /*
-           * Keep default.
-           */
-        }
+      if (!res.ok) {
+        const data =
+          await res.json().catch(
+            () => ({})
+          )
 
 
         throw new Error(
-          message
+          data?.error ||
+            'Failed to remove item'
         )
       }
 
 
-      await loadCart(false)
-    } catch (e: unknown) {
-      /*
-       * If the connection disappeared,
-       * queue the DELETE.
-       */
-      if (
-        !navigator.onLine
-      ) {
-        try {
-          await queueCartRemoval(
-            userId,
-            cartItemId
-          )
-
-
-          removeLocalItem(
-            cartItemId
-          )
-
-
-          setOffline(true)
-
-          setError(
-            'Connection lost. The removal was saved and will synchronize later.'
-          )
-
-          return
-        } catch {
-          /*
-           * Fall through.
-           */
-        }
-      }
-
-
+      await loadCart()
+    } catch (e: any) {
       setError(
-        e instanceof Error
-          ? e.message
-          : 'Failed to remove item.'
+        e?.message ||
+          'Failed to remove item'
       )
     }
   }
 
 
+  /*
+   * Calculate whether a group
+   * can proceed to checkout.
+   */
+  function getGroupTotal(
+    group: CartGroup
+  ) {
+    const delivery =
+      Number(
+        group.vendor
+          .deliveryFee || 50
+      )
+
+
+    const service =
+      10
+
+
+    return (
+      Number(
+        group.subtotal || 0
+      ) +
+      delivery +
+      service
+    )
+  }
+
+
+  /*
+   * Loading screen.
+   */
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 p-4">
@@ -1158,7 +641,7 @@ export default function CartPage() {
         <div className="space-y-4">
 
           {[1, 2].map(
-            i => (
+            (i) => (
               <div
                 key={i}
                 className="h-32 bg-slate-200 animate-pulse rounded-2xl"
@@ -1176,6 +659,8 @@ export default function CartPage() {
   return (
     <div className="min-h-screen bg-slate-50 pb-28">
 
+      {/* Header */}
+
       <header className="bg-white sticky top-0 z-30 border-b border-slate-100 px-4 py-3 flex items-center gap-3">
 
         <Link
@@ -1185,56 +670,73 @@ export default function CartPage() {
           ←
         </Link>
 
+
         <h1 className="font-bold text-lg">
           Your Cart
         </h1>
 
-        {syncing && (
-          <span className="ml-auto text-xs text-primary-600 font-medium">
-            Syncing...
-          </span>
-        )}
-
       </header>
+
+
+      {/* Offline banner */}
+
+      {offline && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+
+          <div className="flex items-start gap-2">
+
+            <span className="text-amber-600">
+              ⚡
+            </span>
+
+
+            <div>
+
+              <p className="text-xs font-bold text-amber-800">
+                OFFLINE MODE
+              </p>
+
+
+              <p className="text-xs text-amber-700">
+                Showing the last cart saved
+                on this device.
+              </p>
+
+
+              {cachedAt && (
+                <p className="text-[10px] text-amber-600 mt-1">
+                  Saved:{' '}
+                  {new Date(
+                    cachedAt
+                  ).toLocaleString()}
+                </p>
+              )}
+
+            </div>
+
+          </div>
+
+        </div>
+      )}
 
 
       <main className="p-4 space-y-4">
 
-        {offline && (
-          <div className="card p-3 bg-amber-50 border border-amber-200 text-amber-800">
-
-            <p className="font-semibold text-sm">
-              You are offline
-            </p>
-
-            <p className="text-xs mt-1">
-              Cart changes are being saved
-              on this device and will
-              synchronize automatically
-              when internet returns.
-            </p>
-
-            {cachedAt && (
-              <p className="text-[11px] mt-2 opacity-75">
-                Last server sync:{' '}
-                {new Date(
-                  cachedAt
-                ).toLocaleString()}
-              </p>
-            )}
-
-          </div>
-        )}
-
+        {/* Error */}
 
         {error && (
-          <div className="card p-3 text-sm text-center text-slate-700">
+          <div className="card p-4 text-red-600 text-center text-sm">
+
             {error}
+
           </div>
         )}
 
 
-        {groups.length === 0 &&
+        {/* Empty cart */}
+
+        {groups.length ===
+          0 &&
           !error && (
             <div className="card p-10 text-center">
 
@@ -1242,15 +744,17 @@ export default function CartPage() {
                 🛒
               </p>
 
+
               <p className="font-medium text-lg">
                 Your cart is empty
               </p>
 
+
               <p className="text-sm text-slate-500 mt-1 mb-6">
-                Browse nearby mama
-                mbogas and add fresh
-                produce
+                Browse nearby mama mbogas
+                and add fresh produce
               </p>
+
 
               <Link
                 href="/customer"
@@ -1263,30 +767,37 @@ export default function CartPage() {
           )}
 
 
+        {/* Cart groups */}
+
         {groups.map(
-          group => {
-
+          (group) => {
             const delivery =
-              group.vendor
-                .deliveryFee ||
-              50
+              Number(
+                group.vendor
+                  .deliveryFee ||
+                  50
+              )
 
 
-            const service = 10
+            const service =
+              10
 
 
             const total =
-              group.subtotal +
-              delivery +
-              service
+              getGroupTotal(
+                group
+              )
 
 
             const belowMin =
-              group.subtotal <
-              (
+              Number(
+                group.subtotal ||
+                  0
+              ) <
+              Number(
                 group.vendor
                   .minOrderAmount ||
-                0
+                  0
               )
 
 
@@ -1298,23 +809,24 @@ export default function CartPage() {
                 className="card overflow-hidden"
               >
 
+                {/* Vendor header */}
+
                 <div className="bg-primary-50 px-4 py-3 flex items-center justify-between">
 
                   <div>
 
                     <p className="font-bold">
                       {
-                        group
-                          .vendor
+                        group.vendor
                           .businessName
                       }
                     </p>
 
+
                     {!group.vendor
                       .isOpen && (
                       <p className="text-xs text-red-600 font-medium">
-                        Currently
-                        closed
+                        Currently closed
                       </p>
                     )}
 
@@ -1331,28 +843,39 @@ export default function CartPage() {
                 </div>
 
 
+                {/* Items */}
+
                 <div className="divide-y divide-slate-100">
 
                   {group.items.map(
-                    item => (
-
+                    (item) => (
                       <div
-                        key={item.id}
+                        key={
+                          item.id
+                        }
                         className="p-4 flex gap-3"
                       >
 
                         <div className="flex-1">
 
                           <p className="font-semibold">
-                            {item.name}
+                            {
+                              item.name
+                            }
                           </p>
 
 
                           <p className="text-xs text-slate-500">
-                            {item.unit}
+                            {
+                              item.unit
+                            }
+
                             {' · '}
+
                             KES{' '}
-                            {item.price}
+                            {
+                              item.price
+                            }
                           </p>
 
 
@@ -1370,15 +893,16 @@ export default function CartPage() {
 
                             <button
                               onClick={() =>
-                                updateQty(
+                                void updateQty(
                                   item.id,
                                   item.quantity -
                                     1
                                 )
                               }
                               disabled={
+                                offline ||
                                 item.quantity <=
-                                1
+                                  1
                               }
                               className="w-8 h-8 rounded-full border border-slate-200 font-bold disabled:opacity-40"
                             >
@@ -1395,13 +919,16 @@ export default function CartPage() {
 
                             <button
                               onClick={() =>
-                                updateQty(
+                                void updateQty(
                                   item.id,
                                   item.quantity +
                                     1
                                 )
                               }
-                              className="w-8 h-8 rounded-full border border-slate-200 font-bold"
+                              disabled={
+                                offline
+                              }
+                              className="w-8 h-8 rounded-full border border-slate-200 font-bold disabled:opacity-40"
                             >
                               +
                             </button>
@@ -1409,11 +936,14 @@ export default function CartPage() {
 
                             <button
                               onClick={() =>
-                                removeItem(
+                                void removeItem(
                                   item.id
                                 )
                               }
-                              className="text-xs text-red-500 ml-2"
+                              disabled={
+                                offline
+                              }
+                              className="text-xs text-red-500 ml-2 disabled:opacity-40"
                             >
                               Remove
                             </button>
@@ -1431,12 +961,13 @@ export default function CartPage() {
                         </p>
 
                       </div>
-
                     )
                   )}
 
                 </div>
 
+
+                {/* Totals */}
 
                 <div className="px-4 py-3 bg-slate-50 space-y-1 text-sm">
 
@@ -1464,7 +995,9 @@ export default function CartPage() {
 
                     <span>
                       KES{' '}
-                      {delivery}
+                      {
+                        delivery
+                      }
                     </span>
 
                   </div>
@@ -1478,7 +1011,9 @@ export default function CartPage() {
 
                     <span>
                       KES{' '}
-                      {service}
+                      {
+                        service
+                      }
                     </span>
 
                   </div>
@@ -1492,7 +1027,9 @@ export default function CartPage() {
 
                     <span className="text-primary-700">
                       KES{' '}
-                      {total}
+                      {
+                        total
+                      }
                     </span>
 
                   </div>
@@ -1500,49 +1037,57 @@ export default function CartPage() {
                 </div>
 
 
+                {/* Minimum order */}
+
                 {belowMin && (
                   <div className="px-4 py-2 bg-amber-50 text-amber-700 text-sm">
-                    Minimum order is
-                    KES{' '}
+
+                    Minimum order is KES{' '}
+
                     {
-                      group
-                        .vendor
+                      group.vendor
                         .minOrderAmount
-                    }.
-                    {' '}
-                    Add more items.
+                    }
+
+                    . Add more items.
+
                   </div>
                 )}
 
 
+                {/* Checkout */}
+
                 <div className="p-4">
 
-                  <button
-                    disabled={
-                      offline ||
-                      belowMin ||
-                      !group.vendor
-                        .isOpen
-                    }
-                    onClick={() =>
-                      router.push(
-                        `/customer/checkout?vendorId=${group.vendor.id}`
-                      )
-                    }
-                    className="btn-primary w-full disabled:opacity-50"
-                  >
-
-                    {offline
-                      ? 'Reconnect for Checkout'
-                      : !group
-                          .vendor
+                  {offline ? (
+                    <button
+                      disabled
+                      className="btn-primary w-full disabled:opacity-50"
+                    >
+                      Reconnect to Checkout
+                    </button>
+                  ) : (
+                    <button
+                      disabled={
+                        belowMin ||
+                        !group.vendor
                           .isOpen
-                      ? 'Vendor Closed'
-                      : belowMin
-                      ? `Min KES ${group.vendor.minOrderAmount}`
-                      : `Checkout · KES ${total}`}
-
-                  </button>
+                      }
+                      onClick={() =>
+                        router.push(
+                          `/customer/checkout?vendorId=${group.vendor.id}`
+                        )
+                      }
+                      className="btn-primary w-full disabled:opacity-50"
+                    >
+                      {!group.vendor
+                        .isOpen
+                        ? 'Vendor Closed'
+                        : belowMin
+                          ? `Min KES ${group.vendor.minOrderAmount}`
+                          : `Checkout · KES ${total}`}
+                    </button>
+                  )}
 
                 </div>
 
@@ -1553,6 +1098,8 @@ export default function CartPage() {
 
       </main>
 
+
+      {/* Bottom nav */}
 
       <BottomNav
         role="CUSTOMER"
