@@ -2,34 +2,36 @@
 
 import { useEffect } from 'react'
 
-export default function
-ServiceWorkerRegistration() {
+export default function ServiceWorkerRegistration() {
   useEffect(() => {
     if (
+      typeof window === 'undefined' ||
       !('serviceWorker' in navigator)
     ) {
       return
     }
 
     /*
-     * Do not register on localhost during
-     * development unless explicitly wanted.
+     * Service workers require a secure context.
      *
-     * This prevents development caching
-     * from becoming a nightmare.
+     * localhost is also allowed by browsers during
+     * development, but we intentionally avoid
+     * registering there so the development server
+     * does not become polluted by stale caches.
      */
-    if (
-      window.location.hostname ===
-        'localhost' ||
-      window.location.hostname ===
-        '127.0.0.1'
-    ) {
+    const hostname = window.location.hostname
+
+    const isLocalDevelopment =
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1'
+
+    if (isLocalDevelopment) {
       return
     }
 
-    let mounted = true
+    let cancelled = false
 
-    const register = async () => {
+    async function register() {
       try {
         const registration =
           await navigator.serviceWorker.register(
@@ -39,23 +41,23 @@ ServiceWorkerRegistration() {
             }
           )
 
-        if (!mounted) {
+        if (cancelled) {
           return
         }
 
-        console.log(
-          '[PWA] Service worker registered:',
+        console.info(
+          '[Mboga PWA] Service worker registered:',
           registration.scope
         )
 
         /*
-         * Check for updates whenever the
-         * application starts.
+         * Ask the browser to check whether a newer
+         * service worker exists.
          */
-        registration.update()
+        await registration.update()
       } catch (error) {
         console.error(
-          '[PWA] Service worker registration failed:',
+          '[Mboga PWA] Service worker registration failed:',
           error
         )
       }
@@ -64,7 +66,7 @@ ServiceWorkerRegistration() {
     register()
 
     return () => {
-      mounted = false
+      cancelled = true
     }
   }, [])
 
