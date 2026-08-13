@@ -10,6 +10,8 @@ import { ToastProvider } from '@/components/ui/Toast'
 import ServiceWorkerRegistration
   from '@/components/pwa/ServiceWorkerRegistration'
 
+import NetworkStatus
+  from '@/components/pwa/NetworkStatus'
 
 export const metadata: Metadata = {
   title:
@@ -62,7 +64,7 @@ export default function RootLayout({
       <body className="min-h-screen antialiased">
 
         <ServiceWorkerRegistration />
-
+         <NetworkStatus />
         <ToastProvider>
           {children}
         </ToastProvider>
